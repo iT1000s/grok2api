@@ -586,6 +586,237 @@ class ImageCollectProcessor(BaseProcessor):
         return images
 
 
+class ResponsesStreamFormatter:
+    """
+    Wraps an existing chat.completion.chunk SSE stream and re-emits it
+    as OpenAI Responses API SSE events.
+
+    Expected input: SSE lines like "data: {...}" or "data: [DONE]"
+    Output: Responses API events (response.created, response.output_text.delta, etc.)
+    """
+
+    def __init__(self, model: str):
+        self.model = model
+        self.response_id = f"resp_{uuid.uuid4().hex[:48]}"
+        self.msg_id = f"msg_{uuid.uuid4().hex[:48]}"
+        self.created = int(time.time())
+        self._header_sent = False
+        self._content_parts: list[str] = []
+
+    def _event(self, event_type: str, data: dict) -> str:
+        """Build a single SSE event line"""
+        return f"event: {event_type}\ndata: {orjson.dumps(data).decode()}\n\n"
+
+    def _build_response_obj(self, status: str = "in_progress", output: list = None) -> dict:
+        """Build a minimal Response object skeleton"""
+        return {
+            "id": self.response_id,
+            "object": "response",
+            "created_at": self.created,
+            "status": status,
+            "model": self.model,
+            "output": output or [],
+            "usage": None,
+        }
+
+    def _build_output_item(self, status: str = "in_progress", content: list = None) -> dict:
+        """Build a message output item"""
+        return {
+            "id": self.msg_id,
+            "type": "message",
+            "role": "assistant",
+            "status": status,
+            "content": content or [],
+        }
+
+    def _build_content_part(self, text: str = "", annotations: list = None) -> dict:
+        """Build an output_text content part"""
+        return {
+            "type": "output_text",
+            "text": text,
+            "annotations": annotations or [],
+        }
+
+    async def format(self, stream):
+        """Transform chat SSE stream to Responses API SSE stream"""
+        full_text = []
+
+        async for chunk in stream:
+            if not isinstance(chunk, str):
+                chunk = chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk)
+
+            for line in chunk.strip().split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Handle [DONE]
+                if line == "data: [DONE]":
+                    # Emit done events
+                    collected = "".join(full_text)
+
+                    # response.output_text.done
+                    yield self._event("response.output_text.done", {
+                        "type": "response.output_text.done",
+                        "item_id": self.msg_id,
+                        "output_index": 0,
+                        "content_index": 0,
+                        "text": collected,
+                    })
+
+                    # response.content_part.done
+                    yield self._event("response.content_part.done", {
+                        "type": "response.content_part.done",
+                        "item_id": self.msg_id,
+                        "output_index": 0,
+                        "content_index": 0,
+                        "part": self._build_content_part(collected),
+                    })
+
+                    # response.output_item.done
+                    yield self._event("response.output_item.done", {
+                        "type": "response.output_item.done",
+                        "output_index": 0,
+                        "item": self._build_output_item("completed", [self._build_content_part(collected)]),
+                    })
+
+                    # response.completed
+                    yield self._event("response.completed", {
+                        "type": "response.completed",
+                        "response": self._build_response_obj(
+                            "completed",
+                            [self._build_output_item("completed", [self._build_content_part(collected)])]
+                        ),
+                    })
+                    continue
+
+                if not line.startswith("data: "):
+                    continue
+
+                raw = line[6:]
+                try:
+                    data = orjson.loads(raw)
+                except orjson.JSONDecodeError:
+                    continue
+
+                # Send header events once
+                if not self._header_sent:
+                    self._header_sent = True
+
+                    # response.created
+                    yield self._event("response.created", {
+                        "type": "response.created",
+                        "response": self._build_response_obj("in_progress"),
+                    })
+
+                    # response.in_progress
+                    yield self._event("response.in_progress", {
+                        "type": "response.in_progress",
+                        "response": self._build_response_obj("in_progress"),
+                    })
+
+                    # response.output_item.added
+                    yield self._event("response.output_item.added", {
+                        "type": "response.output_item.added",
+                        "output_index": 0,
+                        "item": self._build_output_item("in_progress"),
+                    })
+
+                    # response.content_part.added
+                    yield self._event("response.content_part.added", {
+                        "type": "response.content_part.added",
+                        "item_id": self.msg_id,
+                        "output_index": 0,
+                        "content_index": 0,
+                        "part": self._build_content_part(),
+                    })
+
+                # Extract delta content from chat.completion.chunk
+                choices = data.get("choices", [])
+                if not choices:
+                    continue
+                delta = choices[0].get("delta", {})
+                content = delta.get("content", "")
+                if content:
+                    full_text.append(content)
+                    yield self._event("response.output_text.delta", {
+                        "type": "response.output_text.delta",
+                        "item_id": self.msg_id,
+                        "output_index": 0,
+                        "content_index": 0,
+                        "delta": content,
+                    })
+
+
+class ResponsesCollectFormatter:
+    """
+    Converts a non-streaming chat.completion response dict
+    into an OpenAI Responses API response object.
+    """
+
+    @staticmethod
+    def format(chat_result: dict, model: str) -> dict:
+        """Convert chat.completion dict to Response object"""
+        response_id = f"resp_{uuid.uuid4().hex[:48]}"
+        msg_id = f"msg_{uuid.uuid4().hex[:48]}"
+        created = chat_result.get("created", int(time.time()))
+
+        # Extract content from chat completion
+        content_text = ""
+        choices = chat_result.get("choices", [])
+        if choices:
+            message = choices[0].get("message", {})
+            content_text = message.get("content", "")
+
+        return {
+            "id": response_id,
+            "object": "response",
+            "created_at": created,
+            "status": "completed",
+            "model": model,
+            "output": [
+                {
+                    "id": msg_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": content_text,
+                            "annotations": [],
+                        }
+                    ],
+                }
+            ],
+            "parallel_tool_calls": True,
+            "temperature": 1.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "max_output_tokens": None,
+            "previous_response_id": None,
+            "reasoning": {
+                "effort": None,
+                "summary": None,
+            },
+            "service_tier": "default",
+            "text": {
+                "format": {
+                    "type": "text"
+                }
+            },
+            "truncation": "disabled",
+            "usage": {
+                "input_tokens": 0,
+                "input_tokens_details": {"cached_tokens": 0},
+                "output_tokens": 0,
+                "output_tokens_details": {"reasoning_tokens": 0},
+                "total_tokens": 0,
+            },
+        }
+
+
 __all__ = [
     "StreamProcessor",
     "CollectProcessor",
@@ -593,4 +824,6 @@ __all__ = [
     "VideoCollectProcessor",
     "ImageStreamProcessor",
     "ImageCollectProcessor",
+    "ResponsesStreamFormatter",
+    "ResponsesCollectFormatter",
 ]

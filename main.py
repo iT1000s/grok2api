@@ -27,6 +27,7 @@ from app.core.logger import logger, setup_logging
 from app.core.exceptions import register_exception_handlers
 from app.core.response_middleware import ResponseLoggerMiddleware
 from app.api.v1.chat import router as chat_router
+from app.api.v1.responses import router as responses_router
 from app.api.v1.image import router as image_router
 from app.api.v1.files import router as files_router
 from app.api.v1.models import router as models_router
@@ -129,6 +130,7 @@ def create_app() -> FastAPI:
 
     # 注册路由
     app.include_router(chat_router, prefix="/v1", dependencies=[Depends(verify_api_key)])
+    app.include_router(responses_router, prefix="/v1", dependencies=[Depends(verify_api_key)])
     app.include_router(image_router, prefix="/v1", dependencies=[Depends(verify_api_key)])
     app.include_router(models_router, prefix="/v1", dependencies=[Depends(verify_api_key)])
     app.include_router(uploads_router, prefix="/v1", dependencies=[Depends(verify_api_key)])
