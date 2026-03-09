@@ -44,7 +44,11 @@ function makeDone(): string {
   return "data: [DONE]\n\n";
 }
 
-function toImgProxyUrl(globalCfg: GlobalSettings, origin: string, path: string): string {
+function toImgProxyUrl(
+  globalCfg: GlobalSettings,
+  origin: string,
+  path: string,
+): string {
   const baseUrl = (globalCfg.base_url ?? "").trim() || origin;
   return `${baseUrl}/images/${path}`;
 }
@@ -57,7 +61,8 @@ function buildVideoPosterPreview(videoUrl: string, posterUrl?: string): string {
   const href = String(videoUrl || "").replace(/"/g, "&quot;");
   const poster = String(posterUrl || "").replace(/"/g, "&quot;");
   if (!href) return "";
-  if (!poster) return `<a href="${href}" target="_blank" rel="noopener noreferrer">${href}</a>\n`;
+  if (!poster)
+    return `<a href="${href}" target="_blank" rel="noopener noreferrer">${href}</a>\n`;
   return `<a href="${href}" target="_blank" rel="noopener noreferrer" style="display:inline-block;position:relative;max-width:100%;text-decoration:none;">
   <img src="${poster}" alt="video" style="max-width:100%;height:auto;border-radius:12px;display:block;" />
   <span style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;">
@@ -68,8 +73,13 @@ function buildVideoPosterPreview(videoUrl: string, posterUrl?: string): string {
 </a>\n`;
 }
 
-function buildVideoHtml(args: { videoUrl: string; posterUrl?: string; posterPreview: boolean }): string {
-  if (args.posterPreview) return buildVideoPosterPreview(args.videoUrl, args.posterUrl);
+function buildVideoHtml(args: {
+  videoUrl: string;
+  posterUrl?: string;
+  posterPreview: boolean;
+}): string {
+  if (args.posterPreview)
+    return buildVideoPosterPreview(args.videoUrl, args.posterUrl);
   return buildVideoTag(args.videoUrl);
 }
 
@@ -77,7 +87,10 @@ function base64UrlEncode(input: string): string {
   const bytes = new TextEncoder().encode(input);
   let binary = "";
   for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
 }
 
 function encodeAssetPath(raw: string): string {
@@ -122,7 +135,10 @@ export function createOpenAiStreamFromGrokNdjson(
     global: GlobalSettings;
     origin: string;
     requestedModel: string;
-    onFinish?: (result: { status: number; duration: number }) => Promise<void> | void;
+    onFinish?: (result: {
+      status: number;
+      duration: number;
+    }) => Promise<void> | void;
   },
 ): ReadableStream<Uint8Array> {
   const { settings, global, origin } = opts;
@@ -142,15 +158,28 @@ export function createOpenAiStreamFromGrokNdjson(
     .filter(Boolean);
   const showThinking = settings.show_thinking !== false;
 
-  const firstTimeoutMs = Math.max(0, (settings.stream_first_response_timeout ?? 30) * 1000);
-  const chunkTimeoutMs = Math.max(0, (settings.stream_chunk_timeout ?? 120) * 1000);
-  const totalTimeoutMs = Math.max(0, (settings.stream_total_timeout ?? 600) * 1000);
+  const firstTimeoutMs = Math.max(
+    0,
+    (settings.stream_first_response_timeout ?? 30) * 1000,
+  );
+  const chunkTimeoutMs = Math.max(
+    0,
+    (settings.stream_chunk_timeout ?? 120) * 1000,
+  );
+  const totalTimeoutMs = Math.max(
+    0,
+    (settings.stream_total_timeout ?? 600) * 1000,
+  );
 
   return new ReadableStream<Uint8Array>({
     async start(controller) {
       const body = grokResp.body;
       if (!body) {
-        controller.enqueue(encoder.encode(makeChunk(id, created, fallbackModel, "Empty response", "error")));
+        controller.enqueue(
+          encoder.encode(
+            makeChunk(id, created, fallbackModel, "Empty response", "error"),
+          ),
+        );
         controller.enqueue(encoder.encode(makeDone()));
         controller.close();
         return;
@@ -172,7 +201,9 @@ export function createOpenAiStreamFromGrokNdjson(
       let buffer = "";
 
       const flushStop = () => {
-        controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, "", "stop")));
+        controller.enqueue(
+          encoder.encode(makeChunk(id, created, currentModel, "", "stop")),
+        );
         controller.enqueue(encoder.encode(makeDone()));
       };
 
@@ -183,33 +214,51 @@ export function createOpenAiStreamFromGrokNdjson(
           const elapsed = now - startTime;
           if (!firstReceived && elapsed > firstTimeoutMs) {
             flushStop();
-            if (opts.onFinish) await opts.onFinish({ status: finalStatus, duration: (Date.now() - startTime) / 1000 });
+            if (opts.onFinish)
+              await opts.onFinish({
+                status: finalStatus,
+                duration: (Date.now() - startTime) / 1000,
+              });
             controller.close();
             return;
           }
           if (totalTimeoutMs > 0 && elapsed > totalTimeoutMs) {
             flushStop();
-            if (opts.onFinish) await opts.onFinish({ status: finalStatus, duration: (Date.now() - startTime) / 1000 });
+            if (opts.onFinish)
+              await opts.onFinish({
+                status: finalStatus,
+                duration: (Date.now() - startTime) / 1000,
+              });
             controller.close();
             return;
           }
           const idle = now - lastChunkTime;
           if (firstReceived && idle > chunkTimeoutMs) {
             flushStop();
-            if (opts.onFinish) await opts.onFinish({ status: finalStatus, duration: (Date.now() - startTime) / 1000 });
+            if (opts.onFinish)
+              await opts.onFinish({
+                status: finalStatus,
+                duration: (Date.now() - startTime) / 1000,
+              });
             controller.close();
             return;
           }
 
           const perReadTimeout = Math.min(
             firstReceived ? chunkTimeoutMs : firstTimeoutMs,
-            totalTimeoutMs > 0 ? Math.max(0, totalTimeoutMs - elapsed) : Number.POSITIVE_INFINITY,
+            totalTimeoutMs > 0
+              ? Math.max(0, totalTimeoutMs - elapsed)
+              : Number.POSITIVE_INFINITY,
           );
 
           const res = await readWithTimeout(reader, perReadTimeout);
           if ("timeout" in res) {
             flushStop();
-            if (opts.onFinish) await opts.onFinish({ status: finalStatus, duration: (Date.now() - startTime) / 1000 });
+            if (opts.onFinish)
+              await opts.onFinish({
+                status: finalStatus,
+                duration: (Date.now() - startTime) / 1000,
+              });
             controller.close();
             return;
           }
@@ -239,10 +288,22 @@ export function createOpenAiStreamFromGrokNdjson(
             if (err?.message) {
               finalStatus = 500;
               controller.enqueue(
-                encoder.encode(makeChunk(id, created, currentModel, `Error: ${String(err.message)}`, "stop")),
+                encoder.encode(
+                  makeChunk(
+                    id,
+                    created,
+                    currentModel,
+                    `Error: ${String(err.message)}`,
+                    "stop",
+                  ),
+                ),
               );
               controller.enqueue(encoder.encode(makeDone()));
-              if (opts.onFinish) await opts.onFinish({ status: finalStatus, duration: (Date.now() - startTime) / 1000 });
+              if (opts.onFinish)
+                await opts.onFinish({
+                  status: finalStatus,
+                  duration: (Date.now() - startTime) / 1000,
+                });
               controller.close();
               return;
             }
@@ -251,14 +312,22 @@ export function createOpenAiStreamFromGrokNdjson(
             if (!grok) continue;
 
             const userRespModel = grok.userResponse?.model;
-            if (typeof userRespModel === "string" && userRespModel.trim()) currentModel = userRespModel.trim();
+            if (typeof userRespModel === "string" && userRespModel.trim())
+              currentModel = userRespModel.trim();
 
             // Video generation stream
             const videoResp = grok.streamingVideoGenerationResponse;
             if (videoResp) {
-              const progress = typeof videoResp.progress === "number" ? videoResp.progress : 0;
-              const videoUrl = typeof videoResp.videoUrl === "string" ? videoResp.videoUrl : "";
-              const thumbUrl = typeof videoResp.thumbnailImageUrl === "string" ? videoResp.thumbnailImageUrl : "";
+              const progress =
+                typeof videoResp.progress === "number" ? videoResp.progress : 0;
+              const videoUrl =
+                typeof videoResp.videoUrl === "string"
+                  ? videoResp.videoUrl
+                  : "";
+              const thumbUrl =
+                typeof videoResp.thumbnailImageUrl === "string"
+                  ? videoResp.thumbnailImageUrl
+                  : "";
 
               if (progress > lastVideoProgress) {
                 lastVideoProgress = progress;
@@ -272,7 +341,9 @@ export function createOpenAiStreamFromGrokNdjson(
                   } else {
                     msg = `视频已生成${progress}%</think>\n`;
                   }
-                  controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, msg)));
+                  controller.enqueue(
+                    encoder.encode(makeChunk(id, created, currentModel, msg)),
+                  );
                 }
               }
 
@@ -310,7 +381,9 @@ export function createOpenAiStreamFromGrokNdjson(
             if (isImage) {
               const modelResp = grok.modelResponse;
               if (modelResp) {
-                const urls = normalizeGeneratedAssetUrls(modelResp.generatedImageUrls);
+                const urls = normalizeGeneratedAssetUrls(
+                  modelResp.generatedImageUrls,
+                );
                 if (urls.length) {
                   const linesOut: string[] = [];
                   for (const u of urls) {
@@ -319,15 +392,31 @@ export function createOpenAiStreamFromGrokNdjson(
                     linesOut.push(`![Generated Image](${imgUrl})`);
                   }
                   controller.enqueue(
-                    encoder.encode(makeChunk(id, created, currentModel, linesOut.join("\n"), "stop")),
+                    encoder.encode(
+                      makeChunk(
+                        id,
+                        created,
+                        currentModel,
+                        linesOut.join("\n"),
+                        "stop",
+                      ),
+                    ),
                   );
                   controller.enqueue(encoder.encode(makeDone()));
-                  if (opts.onFinish) await opts.onFinish({ status: finalStatus, duration: (Date.now() - startTime) / 1000 });
+                  if (opts.onFinish)
+                    await opts.onFinish({
+                      status: finalStatus,
+                      duration: (Date.now() - startTime) / 1000,
+                    });
                   controller.close();
                   return;
                 }
               } else if (typeof rawToken === "string" && rawToken) {
-                controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, rawToken)));
+                controller.enqueue(
+                  encoder.encode(
+                    makeChunk(id, created, currentModel, rawToken),
+                  ),
+                );
               }
               continue;
             }
@@ -344,14 +433,21 @@ export function createOpenAiStreamFromGrokNdjson(
 
             if (thinkingFinished && currentIsThinking) continue;
 
-            if (grok.toolUsageCardId && grok.webSearchResults?.results && Array.isArray(grok.webSearchResults.results)) {
+            if (
+              grok.toolUsageCardId &&
+              grok.webSearchResults?.results &&
+              Array.isArray(grok.webSearchResults.results)
+            ) {
               if (currentIsThinking) {
                 if (showThinking) {
                   let appended = "";
                   for (const r of grok.webSearchResults.results) {
                     const title = typeof r.title === "string" ? r.title : "";
                     const url = typeof r.url === "string" ? r.url : "";
-                    const preview = typeof r.preview === "string" ? r.preview.replace(/\n/g, "") : "";
+                    const preview =
+                      typeof r.preview === "string"
+                        ? r.preview.replace(/\n/g, "")
+                        : "";
                     appended += `\n- [${title}](${url} \"${preview}\")`;
                   }
                   token += `${appended}\n`;
@@ -377,24 +473,43 @@ export function createOpenAiStreamFromGrokNdjson(
               shouldSkip = true;
             }
 
-            if (!shouldSkip) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, content)));
+            if (!shouldSkip)
+              controller.enqueue(
+                encoder.encode(makeChunk(id, created, currentModel, content)),
+              );
             isThinking = currentIsThinking;
           }
         }
 
-        controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, "", "stop")));
+        controller.enqueue(
+          encoder.encode(makeChunk(id, created, currentModel, "", "stop")),
+        );
         controller.enqueue(encoder.encode(makeDone()));
-        if (opts.onFinish) await opts.onFinish({ status: finalStatus, duration: (Date.now() - startTime) / 1000 });
+        if (opts.onFinish)
+          await opts.onFinish({
+            status: finalStatus,
+            duration: (Date.now() - startTime) / 1000,
+          });
         controller.close();
       } catch (e) {
         finalStatus = 500;
         controller.enqueue(
           encoder.encode(
-            makeChunk(id, created, currentModel, `处理错误: ${e instanceof Error ? e.message : String(e)}`, "error"),
+            makeChunk(
+              id,
+              created,
+              currentModel,
+              `处理错误: ${e instanceof Error ? e.message : String(e)}`,
+              "error",
+            ),
           ),
         );
         controller.enqueue(encoder.encode(makeDone()));
-        if (opts.onFinish) await opts.onFinish({ status: finalStatus, duration: (Date.now() - startTime) / 1000 });
+        if (opts.onFinish)
+          await opts.onFinish({
+            status: finalStatus,
+            duration: (Date.now() - startTime) / 1000,
+          });
         controller.close();
       } finally {
         try {
@@ -409,11 +524,20 @@ export function createOpenAiStreamFromGrokNdjson(
 
 export async function parseOpenAiFromGrokNdjson(
   grokResp: Response,
-  opts: { cookie: string; settings: GrokSettings; global: GlobalSettings; origin: string; requestedModel: string },
+  opts: {
+    cookie: string;
+    settings: GrokSettings;
+    global: GlobalSettings;
+    origin: string;
+    requestedModel: string;
+  },
 ): Promise<Record<string, unknown>> {
   const { global, origin, requestedModel, settings } = opts;
   const text = await grokResp.text();
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
 
   let content = "";
   let model = requestedModel;
@@ -437,7 +561,10 @@ export async function parseOpenAiFromGrokNdjson(
       const src = toImgProxyUrl(global, origin, videoPath);
 
       let poster: string | undefined;
-      if (typeof videoResp.thumbnailImageUrl === "string" && videoResp.thumbnailImageUrl) {
+      if (
+        typeof videoResp.thumbnailImageUrl === "string" &&
+        videoResp.thumbnailImageUrl
+      ) {
         const thumbPath = encodeAssetPath(videoResp.thumbnailImageUrl);
         poster = toImgProxyUrl(global, origin, thumbPath);
       }
@@ -453,9 +580,11 @@ export async function parseOpenAiFromGrokNdjson(
 
     const modelResp = grok.modelResponse;
     if (!modelResp) continue;
-    if (typeof modelResp.error === "string" && modelResp.error) throw new Error(modelResp.error);
+    if (typeof modelResp.error === "string" && modelResp.error)
+      throw new Error(modelResp.error);
 
-    if (typeof modelResp.model === "string" && modelResp.model) model = modelResp.model;
+    if (typeof modelResp.model === "string" && modelResp.model)
+      model = modelResp.model;
     if (typeof modelResp.message === "string") content = modelResp.message;
 
     const rawUrls = modelResp.generatedImageUrls;
@@ -489,5 +618,585 @@ export async function parseOpenAiFromGrokNdjson(
       },
     ],
     usage: null,
+  };
+}
+
+// ============ Responses API format converters ============
+
+function makeResponsesEvent(
+  eventType: string,
+  data: Record<string, unknown>,
+): string {
+  return `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+function buildResponseObj(
+  id: string,
+  created: number,
+  model: string,
+  status: string,
+  output: unknown[] = [],
+  usage: unknown = null,
+): Record<string, unknown> {
+  return {
+    id,
+    object: "response",
+    created_at: created,
+    status,
+    model,
+    output,
+    usage,
+  };
+}
+
+function buildOutputItem(
+  msgId: string,
+  status: string,
+  content: unknown[] = [],
+): Record<string, unknown> {
+  return {
+    id: msgId,
+    type: "message",
+    role: "assistant",
+    status,
+    content,
+  };
+}
+
+function buildContentPart(
+  text = "",
+  annotations: unknown[] = [],
+): Record<string, unknown> {
+  return { type: "output_text", text, annotations };
+}
+
+export function createResponsesStreamFromGrokNdjson(
+  grokResp: Response,
+  opts: {
+    cookie: string;
+    settings: GrokSettings;
+    global: GlobalSettings;
+    origin: string;
+    requestedModel: string;
+    onFinish?: (result: {
+      status: number;
+      duration: number;
+    }) => Promise<void> | void;
+  },
+): ReadableStream<Uint8Array> {
+  const { settings, global, origin } = opts;
+  const fallbackModel =
+    typeof opts.requestedModel === "string" && opts.requestedModel.trim()
+      ? opts.requestedModel.trim()
+      : "grok-4";
+
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+
+  const responseId = `resp_${crypto.randomUUID().replace(/-/g, "")}`;
+  const msgId = `msg_${crypto.randomUUID().replace(/-/g, "")}`;
+  const created = Math.floor(Date.now() / 1000);
+
+  const filteredTags = (settings.filtered_tags ?? "")
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+  const showThinking = settings.show_thinking !== false;
+
+  const firstTimeoutMs = Math.max(
+    0,
+    (settings.stream_first_response_timeout ?? 30) * 1000,
+  );
+  const chunkTimeoutMs = Math.max(
+    0,
+    (settings.stream_chunk_timeout ?? 120) * 1000,
+  );
+  const totalTimeoutMs = Math.max(
+    0,
+    (settings.stream_total_timeout ?? 600) * 1000,
+  );
+
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const body = grokResp.body;
+      if (!body) {
+        // Emit error as completed response with empty content
+        const resp = buildResponseObj(
+          responseId,
+          created,
+          fallbackModel,
+          "completed",
+          [
+            buildOutputItem(msgId, "completed", [
+              buildContentPart("Empty response"),
+            ]),
+          ],
+        );
+        controller.enqueue(
+          encoder.encode(
+            makeResponsesEvent("response.completed", {
+              type: "response.completed",
+              response: resp,
+            }),
+          ),
+        );
+        controller.close();
+        return;
+      }
+
+      const reader = body.getReader();
+      const startTime = Date.now();
+      let finalStatus = 200;
+      let lastChunkTime = startTime;
+      let firstReceived = false;
+      let headerSent = false;
+
+      let currentModel = fallbackModel;
+      let isImage = false;
+      let isThinking = false;
+      let thinkingFinished = false;
+
+      let buffer = "";
+      const fullText: string[] = [];
+
+      const emitHeaders = () => {
+        if (headerSent) return;
+        headerSent = true;
+        controller.enqueue(
+          encoder.encode(
+            makeResponsesEvent("response.created", {
+              type: "response.created",
+              response: buildResponseObj(
+                responseId,
+                created,
+                currentModel,
+                "in_progress",
+              ),
+            }),
+          ),
+        );
+        controller.enqueue(
+          encoder.encode(
+            makeResponsesEvent("response.in_progress", {
+              type: "response.in_progress",
+              response: buildResponseObj(
+                responseId,
+                created,
+                currentModel,
+                "in_progress",
+              ),
+            }),
+          ),
+        );
+        controller.enqueue(
+          encoder.encode(
+            makeResponsesEvent("response.output_item.added", {
+              type: "response.output_item.added",
+              output_index: 0,
+              item: buildOutputItem(msgId, "in_progress"),
+            }),
+          ),
+        );
+        controller.enqueue(
+          encoder.encode(
+            makeResponsesEvent("response.content_part.added", {
+              type: "response.content_part.added",
+              item_id: msgId,
+              output_index: 0,
+              content_index: 0,
+              part: buildContentPart(),
+            }),
+          ),
+        );
+      };
+
+      const emitDelta = (text: string) => {
+        fullText.push(text);
+        controller.enqueue(
+          encoder.encode(
+            makeResponsesEvent("response.output_text.delta", {
+              type: "response.output_text.delta",
+              item_id: msgId,
+              output_index: 0,
+              content_index: 0,
+              delta: text,
+            }),
+          ),
+        );
+      };
+
+      const flushCompleted = () => {
+        const collected = fullText.join("");
+        controller.enqueue(
+          encoder.encode(
+            makeResponsesEvent("response.output_text.done", {
+              type: "response.output_text.done",
+              item_id: msgId,
+              output_index: 0,
+              content_index: 0,
+              text: collected,
+            }),
+          ),
+        );
+        controller.enqueue(
+          encoder.encode(
+            makeResponsesEvent("response.content_part.done", {
+              type: "response.content_part.done",
+              item_id: msgId,
+              output_index: 0,
+              content_index: 0,
+              part: buildContentPart(collected),
+            }),
+          ),
+        );
+        controller.enqueue(
+          encoder.encode(
+            makeResponsesEvent("response.output_item.done", {
+              type: "response.output_item.done",
+              output_index: 0,
+              item: buildOutputItem(msgId, "completed", [
+                buildContentPart(collected),
+              ]),
+            }),
+          ),
+        );
+        controller.enqueue(
+          encoder.encode(
+            makeResponsesEvent("response.completed", {
+              type: "response.completed",
+              response: buildResponseObj(
+                responseId,
+                created,
+                currentModel,
+                "completed",
+                [
+                  buildOutputItem(msgId, "completed", [
+                    buildContentPart(collected),
+                  ]),
+                ],
+              ),
+            }),
+          ),
+        );
+      };
+
+      try {
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const now = Date.now();
+          const elapsed = now - startTime;
+          if (!firstReceived && elapsed > firstTimeoutMs) {
+            emitHeaders();
+            flushCompleted();
+            if (opts.onFinish)
+              await opts.onFinish({
+                status: finalStatus,
+                duration: (Date.now() - startTime) / 1000,
+              });
+            controller.close();
+            return;
+          }
+          if (totalTimeoutMs > 0 && elapsed > totalTimeoutMs) {
+            emitHeaders();
+            flushCompleted();
+            if (opts.onFinish)
+              await opts.onFinish({
+                status: finalStatus,
+                duration: (Date.now() - startTime) / 1000,
+              });
+            controller.close();
+            return;
+          }
+          const idle = now - lastChunkTime;
+          if (firstReceived && idle > chunkTimeoutMs) {
+            emitHeaders();
+            flushCompleted();
+            if (opts.onFinish)
+              await opts.onFinish({
+                status: finalStatus,
+                duration: (Date.now() - startTime) / 1000,
+              });
+            controller.close();
+            return;
+          }
+
+          const perReadTimeout = Math.min(
+            firstReceived ? chunkTimeoutMs : firstTimeoutMs,
+            totalTimeoutMs > 0
+              ? Math.max(0, totalTimeoutMs - elapsed)
+              : Number.POSITIVE_INFINITY,
+          );
+
+          const res = await readWithTimeout(reader, perReadTimeout);
+          if ("timeout" in res) {
+            emitHeaders();
+            flushCompleted();
+            if (opts.onFinish)
+              await opts.onFinish({
+                status: finalStatus,
+                duration: (Date.now() - startTime) / 1000,
+              });
+            controller.close();
+            return;
+          }
+
+          const { value, done } = res;
+          if (done) break;
+          if (!value) continue;
+          buffer += decoder.decode(value, { stream: true });
+
+          let idx: number;
+          while ((idx = buffer.indexOf("\n")) !== -1) {
+            const line = buffer.slice(0, idx).trim();
+            buffer = buffer.slice(idx + 1);
+            if (!line) continue;
+
+            let data: GrokNdjson;
+            try {
+              data = JSON.parse(line) as GrokNdjson;
+            } catch {
+              continue;
+            }
+
+            firstReceived = true;
+            lastChunkTime = Date.now();
+
+            const err = (data as any).error;
+            if (err?.message) {
+              finalStatus = 500;
+              emitHeaders();
+              emitDelta(`Error: ${String(err.message)}`);
+              flushCompleted();
+              if (opts.onFinish)
+                await opts.onFinish({
+                  status: finalStatus,
+                  duration: (Date.now() - startTime) / 1000,
+                });
+              controller.close();
+              return;
+            }
+
+            const grok = (data as any).result?.response;
+            if (!grok) continue;
+
+            const userRespModel = grok.userResponse?.model;
+            if (typeof userRespModel === "string" && userRespModel.trim())
+              currentModel = userRespModel.trim();
+
+            // Video generation
+            const videoResp = grok.streamingVideoGenerationResponse;
+            if (videoResp) {
+              const videoUrl =
+                typeof videoResp.videoUrl === "string"
+                  ? videoResp.videoUrl
+                  : "";
+              const thumbUrl =
+                typeof videoResp.thumbnailImageUrl === "string"
+                  ? videoResp.thumbnailImageUrl
+                  : "";
+              if (videoUrl) {
+                emitHeaders();
+                const videoPath = encodeAssetPath(videoUrl);
+                const src = toImgProxyUrl(global, origin, videoPath);
+                let poster: string | undefined;
+                if (thumbUrl) {
+                  const thumbPath = encodeAssetPath(thumbUrl);
+                  poster = toImgProxyUrl(global, origin, thumbPath);
+                }
+                emitDelta(
+                  buildVideoHtml({
+                    videoUrl: src,
+                    posterPreview: settings.video_poster_preview === true,
+                    ...(poster ? { posterUrl: poster } : {}),
+                  }),
+                );
+              }
+              continue;
+            }
+
+            if (grok.imageAttachmentInfo) isImage = true;
+            const rawToken = grok.token;
+
+            if (isImage) {
+              const modelResp = grok.modelResponse;
+              if (modelResp) {
+                const urls = normalizeGeneratedAssetUrls(
+                  modelResp.generatedImageUrls,
+                );
+                if (urls.length) {
+                  emitHeaders();
+                  const linesOut: string[] = [];
+                  for (const u of urls) {
+                    const imgPath = encodeAssetPath(u);
+                    const imgUrl = toImgProxyUrl(global, origin, imgPath);
+                    linesOut.push(`![Generated Image](${imgUrl})`);
+                  }
+                  emitDelta(linesOut.join("\n"));
+                  flushCompleted();
+                  if (opts.onFinish)
+                    await opts.onFinish({
+                      status: finalStatus,
+                      duration: (Date.now() - startTime) / 1000,
+                    });
+                  controller.close();
+                  return;
+                }
+              } else if (typeof rawToken === "string" && rawToken) {
+                emitHeaders();
+                emitDelta(rawToken);
+              }
+              continue;
+            }
+
+            // Text chat
+            if (Array.isArray(rawToken)) continue;
+            if (typeof rawToken !== "string" || !rawToken) continue;
+            let token = rawToken;
+
+            if (filteredTags.some((t) => token.includes(t))) continue;
+
+            const currentIsThinking = Boolean(grok.isThinking);
+            const messageTag = grok.messageTag;
+
+            if (thinkingFinished && currentIsThinking) continue;
+
+            if (
+              grok.toolUsageCardId &&
+              grok.webSearchResults?.results &&
+              Array.isArray(grok.webSearchResults.results)
+            ) {
+              if (currentIsThinking) {
+                if (showThinking) {
+                  let appended = "";
+                  for (const r of grok.webSearchResults.results) {
+                    const title = typeof r.title === "string" ? r.title : "";
+                    const url = typeof r.url === "string" ? r.url : "";
+                    const preview =
+                      typeof r.preview === "string"
+                        ? r.preview.replace(/\n/g, "")
+                        : "";
+                    appended += `\n- [${title}](${url} \"${preview}\")`;
+                  }
+                  token += `${appended}\n`;
+                } else {
+                  continue;
+                }
+              } else {
+                continue;
+              }
+            }
+
+            let content = token;
+            if (messageTag === "header") content = `\n\n${token}\n\n`;
+
+            let shouldSkip = false;
+            if (!isThinking && currentIsThinking) {
+              if (showThinking) content = `<think>\n${content}`;
+              else shouldSkip = true;
+            } else if (isThinking && !currentIsThinking) {
+              if (showThinking) content = `\n</think>\n${content}`;
+              thinkingFinished = true;
+            } else if (currentIsThinking && !showThinking) {
+              shouldSkip = true;
+            }
+
+            if (!shouldSkip) {
+              emitHeaders();
+              emitDelta(content);
+            }
+            isThinking = currentIsThinking;
+          }
+        }
+
+        emitHeaders();
+        flushCompleted();
+        if (opts.onFinish)
+          await opts.onFinish({
+            status: finalStatus,
+            duration: (Date.now() - startTime) / 1000,
+          });
+        controller.close();
+      } catch (e) {
+        finalStatus = 500;
+        emitHeaders();
+        emitDelta(`处理错误: ${e instanceof Error ? e.message : String(e)}`);
+        flushCompleted();
+        if (opts.onFinish)
+          await opts.onFinish({
+            status: finalStatus,
+            duration: (Date.now() - startTime) / 1000,
+          });
+        controller.close();
+      } finally {
+        try {
+          reader.releaseLock();
+        } catch {
+          // ignore
+        }
+      }
+    },
+  });
+}
+
+export async function parseResponsesFromGrokNdjson(
+  grokResp: Response,
+  opts: {
+    cookie: string;
+    settings: GrokSettings;
+    global: GlobalSettings;
+    origin: string;
+    requestedModel: string;
+  },
+): Promise<Record<string, unknown>> {
+  // Reuse the chat.completion parser, then convert format
+  const chatResult = await parseOpenAiFromGrokNdjson(grokResp, opts);
+
+  const responseId = `resp_${crypto.randomUUID().replace(/-/g, "")}`;
+  const msgId = `msg_${crypto.randomUUID().replace(/-/g, "")}`;
+  const created =
+    (chatResult.created as number) ?? Math.floor(Date.now() / 1000);
+  const model = (chatResult.model as string) ?? opts.requestedModel;
+
+  let contentText = "";
+  const choices = chatResult.choices as Array<{
+    message?: { content?: string };
+  }>;
+  if (choices?.[0]?.message?.content) {
+    contentText = choices[0].message.content;
+  }
+
+  return {
+    id: responseId,
+    object: "response",
+    created_at: created,
+    status: "completed",
+    model,
+    output: [
+      {
+        id: msgId,
+        type: "message",
+        role: "assistant",
+        status: "completed",
+        content: [{ type: "output_text", text: contentText, annotations: [] }],
+      },
+    ],
+    parallel_tool_calls: true,
+    temperature: 1.0,
+    tool_choice: "auto",
+    tools: [],
+    top_p: 1.0,
+    max_output_tokens: null,
+    previous_response_id: null,
+    reasoning: { effort: null, summary: null },
+    service_tier: "default",
+    text: { format: { type: "text" } },
+    truncation: "disabled",
+    usage: {
+      input_tokens: 0,
+      input_tokens_details: { cached_tokens: 0 },
+      output_tokens: 0,
+      output_tokens_details: { reasoning_tokens: 0 },
+      total_tokens: 0,
+    },
   };
 }

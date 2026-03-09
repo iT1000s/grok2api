@@ -8,7 +8,7 @@ import { extractContent, buildConversationPayload, sendConversationRequest } fro
 import { uploadImage } from "../grok/upload";
 import { getDynamicHeaders } from "../grok/headers";
 import { createMediaPost, createPost } from "../grok/create";
-import { createOpenAiStreamFromGrokNdjson, parseOpenAiFromGrokNdjson } from "../grok/processor";
+import { createOpenAiStreamFromGrokNdjson, parseOpenAiFromGrokNdjson, createResponsesStreamFromGrokNdjson, parseResponsesFromGrokNdjson } from "../grok/processor";
 import {
   IMAGE_METHOD_IMAGINE_WS_EXPERIMENTAL,
   generateImagineWs,
@@ -1330,6 +1330,200 @@ openAiRoutes.post("/chat/completions", async (c) => {
         }
 
         const json = await parseOpenAiFromGrokNdjson(upstream, {
+          cookie,
+          settings: settingsBundle.grok,
+          global: settingsBundle.global,
+          origin,
+          requestedModel,
+        });
+
+        const duration = (Date.now() - start) / 1000;
+        await addRequestLog(c.env.DB, {
+          ip,
+          model: requestedModel,
+          duration: Number(duration.toFixed(2)),
+          status: 200,
+          key_name: keyName,
+          token_suffix: jwt.slice(-6),
+          error: "",
+        });
+
+        return c.json(json);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        lastErr = msg;
+        await recordTokenFailure(c.env.DB, jwt, 500, msg);
+        await applyCooldown(c.env.DB, jwt, 500);
+        if (attempt < maxRetry - 1) continue;
+      }
+    }
+
+    const duration = (Date.now() - start) / 1000;
+    await addRequestLog(c.env.DB, {
+      ip,
+      model: requestedModel,
+      duration: Number(duration.toFixed(2)),
+      status: 500,
+      key_name: keyName,
+      token_suffix: "",
+      error: lastErr ?? "unknown_error",
+    });
+
+    return c.json(openAiError(lastErr ?? "Upstream error", "upstream_error"), 500);
+  } catch (e) {
+    const duration = (Date.now() - start) / 1000;
+    await addRequestLog(c.env.DB, {
+      ip,
+      model: requestedModel || "unknown",
+      duration: Number(duration.toFixed(2)),
+      status: 500,
+      key_name: keyName,
+      token_suffix: "",
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return c.json(openAiError("Internal error", "internal_error"), 500);
+  }
+});
+
+openAiRoutes.post("/responses", async (c) => {
+  const start = Date.now();
+  const ip = getClientIp(c.req.raw);
+  const keyName = c.get("apiAuth").name ?? "Unknown";
+  const origin = new URL(c.req.url).origin;
+
+  let requestedModel = "";
+  try {
+    const body = (await c.req.json()) as {
+      model?: string;
+      input?: unknown;
+      stream?: boolean;
+      instructions?: string;
+    };
+
+    requestedModel = String(body.model ?? "");
+    if (!requestedModel) return c.json(openAiError("Missing 'model'", "missing_model"), 400);
+    if (!isValidModel(requestedModel))
+      return c.json(openAiError(`Model '${requestedModel}' not supported`, "model_not_supported"), 400);
+
+    // Convert Responses API input to chat messages format
+    const messages: Array<{ role: string; content: string | Array<{ type: string; text?: string; image_url?: { url?: string } }> }> = [];
+
+    // Add system instructions if provided
+    if (body.instructions && typeof body.instructions === "string") {
+      messages.push({ role: "system", content: body.instructions });
+    }
+
+    // Parse input field
+    if (typeof body.input === "string") {
+      messages.push({ role: "user", content: body.input });
+    } else if (Array.isArray(body.input)) {
+      for (const item of body.input) {
+        if (item && typeof item === "object" && "role" in item) {
+          messages.push({
+            role: String((item as any).role ?? "user"),
+            content: (item as any).content ?? "",
+          });
+        }
+      }
+    } else {
+      return c.json(openAiError("Missing or invalid 'input'", "missing_input"), 400);
+    }
+
+    if (!messages.length) return c.json(openAiError("Input cannot be empty", "empty_input"), 400);
+
+    const settingsBundle = await getSettings(c.env);
+    const cfg = MODEL_CONFIG[requestedModel]!;
+    const retryCodes = Array.isArray(settingsBundle.grok.retry_status_codes)
+      ? settingsBundle.grok.retry_status_codes
+      : [401, 429];
+
+    const stream = Boolean(body.stream);
+    const maxRetry = 3;
+    let lastErr: string | null = null;
+
+    // Quota check
+    const quotaKind = cfg.is_video_model ? "video" : cfg.is_image_model ? "image" : "chat";
+    const quota = await enforceQuota({
+      env: c.env,
+      apiAuth: c.get("apiAuth"),
+      model: requestedModel,
+      kind: quotaKind as any,
+      ...(cfg.is_image_model ? { imageCount: 2 } : {}),
+    });
+    if (!quota.ok) return quota.resp;
+
+    for (let attempt = 0; attempt < maxRetry; attempt++) {
+      const chosen = await selectBestToken(c.env.DB, requestedModel);
+      if (!chosen) return c.json(openAiError("No available token", "NO_AVAILABLE_TOKEN"), 503);
+
+      const jwt = chosen.token;
+      const cf = normalizeCfCookie(settingsBundle.grok.cf_clearance ?? "");
+      const cookie = cf ? `sso-rw=${jwt};sso=${jwt};${cf}` : `sso-rw=${jwt};sso=${jwt}`;
+
+      const { content, images } = extractContent(messages as any);
+
+      try {
+        const uploads = await mapLimit(images, 5, (u) => uploadImage(u, cookie, settingsBundle.grok));
+        const imgIds = uploads.map((u) => u.fileId).filter(Boolean);
+        const imgUris = uploads.map((u) => u.fileUri).filter(Boolean);
+
+        const { payload, referer } = buildConversationPayload({
+          requestModel: requestedModel,
+          content,
+          imgIds,
+          imgUris,
+          settings: settingsBundle.grok,
+        });
+
+        const upstream = await sendConversationRequest({
+          payload,
+          cookie,
+          settings: settingsBundle.grok,
+          ...(referer ? { referer } : {}),
+        });
+
+        if (!upstream.ok) {
+          const txt = await upstream.text().catch(() => "");
+          lastErr = `Upstream ${upstream.status}: ${txt.slice(0, 200)}`;
+          await recordTokenFailure(c.env.DB, jwt, upstream.status, txt.slice(0, 200));
+          await applyCooldown(c.env.DB, jwt, upstream.status);
+          if (retryCodes.includes(upstream.status) && attempt < maxRetry - 1) continue;
+          break;
+        }
+
+        if (stream) {
+          const sse = createResponsesStreamFromGrokNdjson(upstream, {
+            cookie,
+            settings: settingsBundle.grok,
+            global: settingsBundle.global,
+            origin,
+            requestedModel,
+            onFinish: async ({ status, duration }) => {
+              await addRequestLog(c.env.DB, {
+                ip,
+                model: requestedModel,
+                duration: Number(duration.toFixed(2)),
+                status,
+                key_name: keyName,
+                token_suffix: jwt.slice(-6),
+                error: status === 200 ? "" : "stream_error",
+              });
+            },
+          });
+
+          return new Response(sse, {
+            status: 200,
+            headers: {
+              "Content-Type": "text/event-stream; charset=utf-8",
+              "Cache-Control": "no-cache",
+              Connection: "keep-alive",
+              "X-Accel-Buffering": "no",
+              "Access-Control-Allow-Origin": "*",
+            },
+          });
+        }
+
+        const json = await parseResponsesFromGrokNdjson(upstream, {
           cookie,
           settings: settingsBundle.grok,
           global: settingsBundle.global,
