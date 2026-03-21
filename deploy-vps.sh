@@ -9,6 +9,8 @@
 #    bash deploy-vps.sh
 #
 #  可通过环境变量自定义:
+#    BUILD_LOCAL=1            本地构建镜像（默认，避免拉取慢）
+#    BUILD_LOCAL=0            从 ghcr.io 拉取预构建镜像
 #    GROK2API_PORT=8000       服务端口
 #    ADMIN_USER=admin         管理后台用户名
 #    ADMIN_PASS=<random>      管理后台密码
@@ -35,6 +37,8 @@ GROK2API_PORT="${GROK2API_PORT:-8000}"
 ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_PASS="${ADMIN_PASS:-$(openssl rand -base64 12 | tr -d '/+=')}"
 API_KEY="${API_KEY:-sk-$(openssl rand -hex 16)}"
+BUILD_LOCAL="${BUILD_LOCAL:-1}"
+GROK2API_REPO="https://github.com/iT1000s/grok2api.git"
 
 # ---- 前置检查 ----
 check_prereqs() {
@@ -56,8 +60,15 @@ check_prereqs() {
         exit 1
     fi
 
+    # 本地构建模式需要 git
+    if [ "$BUILD_LOCAL" = "1" ] && ! command -v git &>/dev/null; then
+        warn "本地构建模式需要 git，正在安装..."
+        apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1 || true
+    fi
+
     info "Docker: $(docker --version | head -1)"
     info "Compose: $($COMPOSE_CMD version 2>/dev/null | head -1)"
+    [ "$BUILD_LOCAL" = "1" ] && info "模式: 本地构建" || info "模式: 拉取镜像"
 }
 
 # ---- 创建部署目录 ----
@@ -65,6 +76,22 @@ setup_dirs() {
     info "创建部署目录: ${DEPLOY_DIR}"
     mkdir -p "${DEPLOY_DIR}"/{data,logs}
     cd "${DEPLOY_DIR}"
+}
+
+# ---- Clone 仓库（本地构建模式）----
+clone_repo() {
+    if [ "$BUILD_LOCAL" != "1" ]; then
+        return
+    fi
+
+    local repo_dir="${DEPLOY_DIR}/repo"
+    if [ -d "${repo_dir}/.git" ]; then
+        info "更新仓库代码..."
+        git -C "${repo_dir}" pull --quiet 2>/dev/null || true
+    else
+        info "克隆仓库: ${GROK2API_REPO}"
+        git clone --depth 1 "${GROK2API_REPO}" "${repo_dir}"
+    fi
 }
 
 # ---- 生成 .env ----
@@ -93,7 +120,64 @@ EOF
 # ---- 生成 docker-compose.yml ----
 generate_compose() {
     info "生成 docker-compose.yml..."
-    cat > "${DEPLOY_DIR}/docker-compose.yml" <<'COMPOSE_EOF'
+    if [ "$BUILD_LOCAL" = "1" ]; then
+        # 本地构建模式
+        cat > "${DEPLOY_DIR}/docker-compose.yml" <<'COMPOSE_EOF'
+services:
+  grok2api:
+    container_name: grok2api
+    build:
+      context: ./repo
+      dockerfile: Dockerfile
+    image: grok2api:local
+    ports:
+      - "${GROK2API_PORT:-8000}:${SERVER_PORT:-8000}"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SERVER_HOST: ${SERVER_HOST:-0.0.0.0}
+      SERVER_PORT: ${SERVER_PORT:-8000}
+      SERVER_WORKERS: ${SERVER_WORKERS:-1}
+      SERVER_STORAGE_TYPE: ${SERVER_STORAGE_TYPE:-local}
+      SERVER_STORAGE_URL: "${SERVER_STORAGE_URL:-}"
+      STORAGE_WAIT_TIMEOUT: ${STORAGE_WAIT_TIMEOUT:-60}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    shm_size: "1gb"
+    init: true
+    restart: unless-stopped
+    depends_on:
+      flaresolverr:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,urllib.request; p=os.getenv('SERVER_PORT','8000'); urllib.request.urlopen(f'http://127.0.0.1:{p}/health', timeout=2).read();"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
+
+  flaresolverr:
+    container_name: grok2api-flaresolverr
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      LOG_LEVEL: info
+      LOG_HTML: "false"
+      CAPTCHA_SOLVER: none
+    ports:
+      - "127.0.0.1:8191:8191"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8191/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+COMPOSE_EOF
+    else
+        # 拉取镜像模式
+        cat > "${DEPLOY_DIR}/docker-compose.yml" <<'COMPOSE_EOF'
 services:
   grok2api:
     container_name: grok2api
@@ -143,6 +227,7 @@ services:
       retries: 5
       start_period: 20s
 COMPOSE_EOF
+    fi
     info "  docker-compose.yml 已生成"
 }
 
@@ -215,11 +300,20 @@ EOF
     info "  config.toml 已生成"
 }
 
-# ---- 拉取镜像并启动 ----
+# ---- 构建/拉取镜像并启动 ----
 deploy() {
-    info "拉取最新镜像..."
     cd "${DEPLOY_DIR}"
-    $COMPOSE_CMD pull
+
+    if [ "$BUILD_LOCAL" = "1" ]; then
+        info "本地构建 grok2api 镜像（首次可能需要几分钟）..."
+        $COMPOSE_CMD build --no-cache grok2api
+        # FlareSolverr 仍需拉取
+        info "拉取 FlareSolverr 镜像..."
+        $COMPOSE_CMD pull flaresolverr
+    else
+        info "拉取最新镜像..."
+        $COMPOSE_CMD pull
+    fi
 
     info "启动服务..."
     $COMPOSE_CMD up -d
@@ -271,7 +365,11 @@ print_info() {
     echo -e "    查看日志:  cd ${DEPLOY_DIR} && $COMPOSE_CMD logs -f"
     echo -e "    重启服务:  cd ${DEPLOY_DIR} && $COMPOSE_CMD restart"
     echo -e "    停止服务:  cd ${DEPLOY_DIR} && $COMPOSE_CMD down"
-    echo -e "    更新版本:  cd ${DEPLOY_DIR} && $COMPOSE_CMD pull && $COMPOSE_CMD up -d"
+    if [ "$BUILD_LOCAL" = "1" ]; then
+        echo -e "    更新版本:  cd ${DEPLOY_DIR} && git -C repo pull && $COMPOSE_CMD build grok2api && $COMPOSE_CMD up -d"
+    else
+        echo -e "    更新版本:  cd ${DEPLOY_DIR} && $COMPOSE_CMD pull && $COMPOSE_CMD up -d"
+    fi
     echo -e "${CYAN}============================================================${NC}"
     echo ""
     echo -e "  ${YELLOW}⚠️ 请将以上凭据保存到安全位置!${NC}"
@@ -302,6 +400,7 @@ main() {
 
     check_prereqs
     setup_dirs
+    clone_repo
     generate_env
     generate_compose
     generate_config
