@@ -1,0 +1,61 @@
+# VPS 一键部署 grok2api (Python FastAPI + FlareSolverr)
+#
+# 用法:
+#   docker compose -f docker-compose.vps.yml up -d
+#
+# 包含:
+#   - grok2api: 主服务（Python FastAPI + curl_cffi + Playwright）
+#   - flaresolverr: Cloudflare challenge 自动解决（同 IP 获取 cf_clearance）
+#
+# 数据持久化:
+#   - ./data/     配置和 Token 数据
+#   - ./logs/     日志
+
+services:
+  grok2api:
+    container_name: grok2api
+    image: ${GROK2API_IMAGE:-ghcr.io/tqzhr/grok2api:latest}
+    ports:
+      - "${GROK2API_PORT:-8000}:${SERVER_PORT:-8000}"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SERVER_HOST: ${SERVER_HOST:-0.0.0.0}
+      SERVER_PORT: ${SERVER_PORT:-8000}
+      SERVER_WORKERS: ${SERVER_WORKERS:-1}
+      SERVER_STORAGE_TYPE: ${SERVER_STORAGE_TYPE:-local}
+      SERVER_STORAGE_URL: "${SERVER_STORAGE_URL:-}"
+      STORAGE_WAIT_TIMEOUT: ${STORAGE_WAIT_TIMEOUT:-60}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    shm_size: "1gb"
+    init: true
+    restart: unless-stopped
+    depends_on:
+      flaresolverr:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,urllib.request; p=os.getenv('SERVER_PORT','8000'); urllib.request.urlopen(f'http://127.0.0.1:{p}/health', timeout=2).read();"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
+
+  flaresolverr:
+    container_name: grok2api-flaresolverr
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      LOG_LEVEL: info
+      LOG_HTML: "false"
+      CAPTCHA_SOLVER: none
+    ports:
+      - "127.0.0.1:8191:8191"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8191/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
